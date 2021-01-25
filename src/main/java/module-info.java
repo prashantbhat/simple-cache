@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 /**
- * Contains a simple in-memory cache implementation.
+ * A simple in-memory cache implementation.
  */
-package simple.cache;
+module io.github.prashantbhat.simple.cache {
+    exports simple.cache;
+}

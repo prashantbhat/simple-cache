@@ -22,9 +22,9 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-class SimpleCacheTest {
+public class SimpleCacheTest {
     @Test
-    void testWithValueLoader() {
+    public void testWithValueLoader() {
         SimpleCache<String, String> simpleCache = SimpleCache.builder().build(s -> UUID.randomUUID().toString());
         assertNull(simpleCache.put("1", "one"));
         assertEquals(simpleCache.get("1"), "one");
@@ -39,7 +39,7 @@ class SimpleCacheTest {
     }
 
     @Test
-    void testLRUEviction() {
+    public void testLRUEviction() {
         SimpleCache<String, String> simpleCache = SimpleCache.builder().initialCapacity(4).maximumSize(4).build();
         simpleCache.put("1", "one");
         simpleCache.put("2", "two");
@@ -53,7 +53,7 @@ class SimpleCacheTest {
     }
 
     @Test
-    void testCacheKeyExpiry() throws InterruptedException {
+    public void testCacheKeyExpiry() throws InterruptedException {
         SimpleCache<String, String> simpleCache = SimpleCache.builder()
                 .expireAfter(500, ChronoUnit.MILLIS).build();
         simpleCache.put("1", "one");
@@ -72,7 +72,7 @@ class SimpleCacheTest {
     }
 
     @Test
-    void testCacheKeyRenewal() throws InterruptedException {
+    public void testCacheKeyRenewal() throws InterruptedException {
         SimpleCache<String, String> simpleCache = SimpleCache.builder()
                 .expireAfter(200, ChronoUnit.MILLIS).build();
         simpleCache.put("1", "one");

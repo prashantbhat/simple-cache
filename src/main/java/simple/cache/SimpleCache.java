@@ -65,9 +65,9 @@ public final class SimpleCache<K, V> {
      */
     public V put(K key, V value) {
         Objects.requireNonNull(key);
-        cleanup();
         rwl.writeLock().lock();
         try {
+            doCleanup();
             return internalPutValue(key, value);
         } finally {
             rwl.writeLock().unlock();
@@ -92,9 +92,9 @@ public final class SimpleCache<K, V> {
      */
     public V putIfAbsent(K key, Supplier<V> valueSupplier) {
         Objects.requireNonNull(key);
-        cleanup();
         rwl.readLock().lock();
         try {
+            doCleanup();
             V value = cacheMap.get(key);
             if (value == null && valueSupplier != null) { // cache miss
                 rwl.readLock().unlock();// Must release read lock before acquiring write lock
@@ -138,9 +138,9 @@ public final class SimpleCache<K, V> {
 
     private V doGetValue(K key, boolean loadIfAbsent) {
         Objects.requireNonNull(key);
-        cleanup();
         rwl.readLock().lock();
         try {
+            doCleanup();
             V value = cacheMap.get(key);
             if (value == null && loadIfAbsent && valueLoader != null) { // cache miss
                 rwl.readLock().unlock();// must release read lock before acquiring write lock
@@ -184,9 +184,9 @@ public final class SimpleCache<K, V> {
      */
     public V remove(K key) {
         Objects.requireNonNull(key);
-        cleanup();
         rwl.writeLock().lock();
         try {
+            doCleanup();
             delayQueue.remove(new DelayedKey<>(key));
             expiringKeys.remove(key);
             return cacheMap.remove(key);
@@ -238,14 +238,18 @@ public final class SimpleCache<K, V> {
     public void cleanup() {
         rwl.writeLock().lock();
         try {
-            DelayedKey<K> delayedKey = delayQueue.poll();
-            while (delayedKey != null) {
-                cacheMap.remove(delayedKey.getKey());
-                expiringKeys.remove(delayedKey.getKey());
-                delayedKey = delayQueue.poll();
-            }
+            doCleanup();
         } finally {
             rwl.writeLock().unlock();
+        }
+    }
+
+    private void doCleanup() {
+        DelayedKey<K> delayedKey = delayQueue.poll();
+        while (delayedKey != null) {
+            cacheMap.remove(delayedKey.getKey());
+            expiringKeys.remove(delayedKey.getKey());
+            delayedKey = delayQueue.poll();
         }
     }
 
@@ -334,7 +338,7 @@ public final class SimpleCache<K, V> {
             Map<K1, V1> cacheMap;
             if (maximumSize > 0) {
                 // LinkedHashMap as LRU map which uses access order instead of insertion order
-                cacheMap = new LinkedHashMap<K1, V1>(initialCapacity, 0.75f, true) {
+                cacheMap = new LinkedHashMap<>(initialCapacity, 0.75f, true) {
                     @Override
                     protected boolean removeEldestEntry(Map.Entry<K1, V1> eldest) {
                         // remove the eldest entry when map size exceeds the maximum allowed limit
