@@ -24,7 +24,7 @@
     </parent>
     <groupId>io.github.prashantbhat</groupId>
     <artifactId>simple-cache</artifactId>
-    <version>0.0.2</version>
+    <version>0.0.3</version>
 
     <name>Simple Cache</name>
     <description>A simple cache implementation</description>

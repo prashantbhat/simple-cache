@@ -39,15 +39,16 @@ public final class SimpleCache<K, V> {
     private final Function<K, V> valueLoader;
     private final ReentrantReadWriteLock rwl;
 
-    // Holds the map keys using the given life time for expiration.
-    private final DelayQueue<DelayedKey<K>> delayQueue;
-    private final Map<K, DelayedKey<K>> expiringKeys;
-    // The default max life time in milliseconds.
+    // Holds the map keys using the given lifetime for expiration.
+    private final DelayQueue<ExpiringKey<K>> delayQueue;
+    private final Map<K, ExpiringKey<K>> expiringKeys;
+    // The default max lifetime in milliseconds.
     private final long defaultExpiryAfter;
     private final TemporalUnit defaultExpiryUnit;
+    private final boolean renewKeyOnAccess;
 
-    private SimpleCache(Map<K, V> cacheMap, Function<K, V> valueLoader,
-            long defaultExpiryAfter, TemporalUnit defaultExpiryUnit) {
+    private SimpleCache(Map<K, V> cacheMap, Function<K, V> valueLoader, long defaultExpiryAfter,
+                        TemporalUnit defaultExpiryUnit, boolean renewKeyOnAccess) {
         this.cacheMap = cacheMap;
         this.valueLoader = valueLoader;
         this.rwl = new ReentrantReadWriteLock();
@@ -55,6 +56,7 @@ public final class SimpleCache<K, V> {
         this.expiringKeys = new HashMap<>();
         this.defaultExpiryAfter = defaultExpiryAfter;
         this.defaultExpiryUnit = defaultExpiryUnit;
+        this.renewKeyOnAccess = renewKeyOnAccess;
     }
 
     /**
@@ -156,7 +158,7 @@ public final class SimpleCache<K, V> {
                     rwl.readLock().lock();
                     rwl.writeLock().unlock(); // unlock write, still hold read
                 }
-            } else {
+            } else if(renewKeyOnAccess) {
                 renewKey(key);
             }
             return value;
@@ -167,12 +169,12 @@ public final class SimpleCache<K, V> {
 
     private V internalPutValue(K key, V value) {
         if(defaultExpiryAfter > 0) {
-            DelayedKey<K> delayedKey = new DelayedKey<>(key, defaultExpiryAfter, defaultExpiryUnit);
-            DelayedKey<K> oldKey = expiringKeys.put(key, delayedKey);
+            ExpiringKey<K> expiringKey = new ExpiringKey<>(key, defaultExpiryAfter, defaultExpiryUnit);
+            ExpiringKey<K> oldKey = expiringKeys.put(key, expiringKey);
             if (oldKey != null) {
                 delayQueue.remove(oldKey);
             }
-            delayQueue.offer(delayedKey);
+            delayQueue.offer(expiringKey);
         }
         return cacheMap.put(key, value);
     }
@@ -187,7 +189,7 @@ public final class SimpleCache<K, V> {
         rwl.writeLock().lock();
         try {
             doCleanup();
-            delayQueue.remove(new DelayedKey<>(key));
+            delayQueue.remove(new ExpiringKey<>(key));
             expiringKeys.remove(key);
             return cacheMap.remove(key);
         } finally {
@@ -224,9 +226,12 @@ public final class SimpleCache<K, V> {
      * @return {@code true} if the key can be renewed, {@code false} otherwise
      */
     public boolean renewKey(K key) {
-        DelayedKey<K> delayedKey = expiringKeys.get(key);
-        if (delayedKey != null) {
-            delayedKey.renew();
+        ExpiringKey<K> expiringKey = expiringKeys.get(key);
+        if (expiringKey != null) {
+            // when modifying the delay, remove and then re-add the element to the queue.
+            delayQueue.remove(expiringKey);
+            expiringKey.renew();
+            delayQueue.offer(expiringKey);
             return true;
         }
         return false;
@@ -245,11 +250,11 @@ public final class SimpleCache<K, V> {
     }
 
     private void doCleanup() {
-        DelayedKey<K> delayedKey = delayQueue.poll();
-        while (delayedKey != null) {
-            cacheMap.remove(delayedKey.getKey());
-            expiringKeys.remove(delayedKey.getKey());
-            delayedKey = delayQueue.poll();
+        ExpiringKey<K> expiringKey = delayQueue.poll();
+        while (expiringKey != null) {
+            cacheMap.remove(expiringKey.getKey());
+            expiringKeys.remove(expiringKey.getKey());
+            expiringKey = delayQueue.poll();
         }
     }
 
@@ -271,6 +276,7 @@ public final class SimpleCache<K, V> {
         private long maximumSize = -1;
         private long defaultExpiryAfter = 0;
         private TemporalUnit defaultExpiryUnit;
+        private boolean renewKeyOnAccess;
 
         /**
          * Sets the minimum total size for the internal hash tables.
@@ -317,6 +323,16 @@ public final class SimpleCache<K, V> {
         }
 
         /**
+         * Flag to allow renewal of key based on last access time.
+         * @param renewKeyOnAccess renew key based on last access time
+         * @return {@code this} instance to support method chaining
+         */
+        public CacheBuilder<K, V> renewKeyOnAccess(boolean renewKeyOnAccess) {
+            this.renewKeyOnAccess = renewKeyOnAccess;
+            return this;
+        }
+
+        /**
          * Build a new instance of the {@link SimpleCache} with all configured parameters.
          * @param <K1> the key type
          * @param <V1> the value type
@@ -348,21 +364,21 @@ public final class SimpleCache<K, V> {
             } else {
                 cacheMap = new HashMap<>(initialCapacity);
             }
-            return new SimpleCache<>(cacheMap, valueLoader, defaultExpiryAfter, defaultExpiryUnit);
+            return new SimpleCache<>(cacheMap, valueLoader, defaultExpiryAfter, defaultExpiryUnit, renewKeyOnAccess);
         }
     }
 
-    private static class DelayedKey<K> implements Delayed {
+    private static class ExpiringKey<K> implements Delayed {
         private final K key;
         private long expireAfter;
         private TemporalUnit expiryUnit;
         private Instant startTime;
 
-        public DelayedKey(K key) {
+        public ExpiringKey(K key) {
             this.key = key;
         }
 
-        public DelayedKey(K key, long expireAfter, TemporalUnit expiryUnit) {
+        public ExpiringKey(K key, long expireAfter, TemporalUnit expiryUnit) {
             this(key);
             this.expiryUnit = expiryUnit;
             this.startTime = Instant.now();
@@ -386,7 +402,7 @@ public final class SimpleCache<K, V> {
 
         @Override
         public int compareTo(Delayed that) {
-            return Long.compare(this.getDelay(TimeUnit.NANOSECONDS), that.getDelay(TimeUnit.NANOSECONDS));
+            return Long.compare(this.getDelay(TimeUnit.MILLISECONDS), that.getDelay(TimeUnit.MILLISECONDS));
         }
 
         @Override
@@ -396,12 +412,17 @@ public final class SimpleCache<K, V> {
             } else if (o == null || getClass() != o.getClass()) {
                 return false;
             }
-            return key.equals(((DelayedKey<?>) o).key);
+            return key.equals(((ExpiringKey<?>) o).key);
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(key);
+        }
+
+        @Override
+        public String toString() {
+            return "ExpiringKey=" + key;
         }
     }
 }

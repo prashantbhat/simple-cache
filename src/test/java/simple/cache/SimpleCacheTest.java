@@ -32,9 +32,9 @@ public class SimpleCacheTest {
         assertEquals(simpleCache.putIfAbsent("2", () -> "two"), "two");
         assertNull(simpleCache.getIfPresent("3"));
         assertNotNull(simpleCache.get("3")); // from value loader
-        assertEquals(simpleCache.size(), 3);
+        assertEquals(3, simpleCache.size());
         assertNotNull(simpleCache.remove("3"));
-        assertEquals(simpleCache.size(), 2);
+        assertEquals(2, simpleCache.size());
         simpleCache.clear();
     }
 
@@ -48,7 +48,7 @@ public class SimpleCacheTest {
         simpleCache.get("1"); // access the 1st key here
         simpleCache.put("5", "five");
         assertNull(simpleCache.getIfPresent("2")); // key 'two' should not be present
-        assertEquals(simpleCache.size(), 4);
+        assertEquals(4, simpleCache.size());
         simpleCache.clear();
     }
 
@@ -67,7 +67,7 @@ public class SimpleCacheTest {
         simpleCache.put("5", "five");
         Thread.sleep(100);
         assertNull(simpleCache.getIfPresent("1")); // key 'one' should not be present
-        assertEquals(simpleCache.size(), 4);
+        assertEquals(4, simpleCache.size());
         simpleCache.clear();
     }
 
@@ -80,6 +80,34 @@ public class SimpleCacheTest {
         assertTrue(simpleCache.renewKey("1"));
         Thread.sleep(100);
         assertNotNull(simpleCache.getIfPresent("1")); // key 'one' should be present
+        simpleCache.clear();
+    }
+
+    @Test
+    public void testAccessBasedExpiry() throws InterruptedException {
+        SimpleCache<String, String> simpleCache = SimpleCache.builder()
+                .expireAfter(200, ChronoUnit.MILLIS).renewKeyOnAccess(true).build();
+        simpleCache.put("1", "one");
+        simpleCache.put("2", "two");
+        Thread.sleep(100);
+        assertEquals("one", simpleCache.get("1"));
+        Thread.sleep(100);
+        assertNotNull(simpleCache.getIfPresent("1")); // key 'one' should be present
+        assertNull(simpleCache.getIfPresent("2")); // key 'two' should be expired by now
+        simpleCache.clear();
+    }
+
+    @Test
+    public void testWriteBasedExpiry() throws InterruptedException {
+        SimpleCache<String, String> simpleCache = SimpleCache.builder()
+                .expireAfter(200, ChronoUnit.MILLIS).renewKeyOnAccess(false).build();
+        simpleCache.put("1", "one");
+        simpleCache.put("2", "two");
+        Thread.sleep(100);
+        assertEquals("one", simpleCache.get("1"));
+        Thread.sleep(100);
+        assertNull(simpleCache.getIfPresent("1")); // key 'one' should also be expired by now
+        assertNull(simpleCache.getIfPresent("2")); // key 'two' should be expired by now
         simpleCache.clear();
     }
 }
