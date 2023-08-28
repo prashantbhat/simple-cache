@@ -221,7 +221,7 @@ public final class SimpleCache<K, V> {
     }
 
     /**
-     * Renews the specified key, by setting the life time to the initial value.
+     * Renews the specified key, by setting the lifetime to the initial value.
      * @param key the key
      * @return {@code true} if the key can be renewed, {@code false} otherwise
      */
