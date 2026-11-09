@@ -15,10 +15,15 @@
  */
 package simple.cache;
 
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.Test;
 
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -109,5 +114,99 @@ public class SimpleCacheTest {
         assertNull(simpleCache.getIfPresent("1")); // key 'one' should also be expired by now
         assertNull(simpleCache.getIfPresent("2")); // key 'two' should be expired by now
         simpleCache.clear();
+    }
+
+    @Test
+    public void testBuilderRejectsInvalidValues() {
+        assertThrows(IllegalArgumentException.class, () -> SimpleCache.builder().initialCapacity(-1));
+        assertThrows(IllegalArgumentException.class, () -> SimpleCache.builder().maximumSize(0));
+        assertThrows(IllegalArgumentException.class, () -> SimpleCache.builder().maximumSize(-5));
+        assertThrows(IllegalArgumentException.class, () -> SimpleCache.builder().expireAfter(0, ChronoUnit.SECONDS));
+        assertThrows(IllegalArgumentException.class, () -> SimpleCache.builder().expireAfter(-5, ChronoUnit.SECONDS));
+        assertThrows(NullPointerException.class, () -> SimpleCache.builder().expireAfter(5, null));
+    }
+
+    @Test
+    public void testRemoveClearsExpirationState() {
+        SimpleCache<String, String> cache = SimpleCache.builder().expireAfter(200, ChronoUnit.MILLIS).build();
+
+        cache.put("a", "A");
+        assertEquals("A", cache.remove("a"));
+        assertNull(cache.getIfPresent("a"));
+        assertEquals(0, cache.size());
+
+        assertNull(cache.remove("missing"));
+        assertFalse(cache.renewKey("missing"));
+    }
+
+    @Test
+    public void testPutIfAbsentReturnsExistingValue() {
+        SimpleCache<String, String> cache = SimpleCache.builder().build();
+
+        assertNull(cache.putIfAbsent("a", "A"));
+        assertEquals("A", cache.putIfAbsent("a", "B"));
+        assertEquals("A", cache.get("a"));
+    }
+
+    @Test
+    public void testPutIfAbsentWithSupplierAndLoader() {
+        AtomicInteger calls = new AtomicInteger();
+
+        SimpleCache<String, String> cache = SimpleCache.builder().build(k -> {
+            calls.incrementAndGet();
+            return "loaded:" + k;
+        });
+
+        assertEquals("loaded:x", cache.get("x"));
+        assertEquals("loaded:x", cache.get("x"));
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    public void testExpirationDoesNotResurrectExpiredKey() throws InterruptedException {
+        SimpleCache<String, String> cache = SimpleCache.builder()
+                .expireAfter(100, ChronoUnit.MILLIS)
+                .renewKeyOnAccess(false)
+                .build();
+
+        cache.put("a", "A");
+        Thread.sleep(150);
+        assertNull(cache.getIfPresent("a"));
+        assertEquals(0, cache.size());
+        assertFalse(cache.renewKey("a"));
+    }
+
+    @Test
+    public void testConcurrentAccessDoesNotThrow() throws Exception {
+        SimpleCache<String, String> cache = SimpleCache.builder().expireAfter(200, ChronoUnit.MILLIS).build();
+        ExecutorService executor = Executors.newFixedThreadPool(8);
+        CountDownLatch start = new CountDownLatch(1);
+
+        Future<?>[] futures = new Future<?>[32];
+        for (int i = 0; i < futures.length; i++) {
+            final int idx = i;
+            futures[i] = executor.submit(() -> {
+                try {
+                    start.await();
+                    for (int j = 0; j < 200; j++) {
+                        String key = "k" + (idx % 4);
+                        cache.put(key, "v" + idx + ":" + j);
+                        cache.getIfPresent(key);
+                        cache.get(key);
+                        cache.size();
+                    }
+                    return null;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+            });
+        }
+
+        start.countDown();
+        for (Future<?> future : futures) {
+            future.get();
+        }
+        executor.shutdownNow();
     }
 }
