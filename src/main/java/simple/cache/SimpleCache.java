@@ -94,28 +94,17 @@ public final class SimpleCache<K, V> {
      */
     public V putIfAbsent(K key, Supplier<V> valueSupplier) {
         Objects.requireNonNull(key);
-        rwl.readLock().lock();
+        rwl.writeLock().lock();
         try {
             doCleanup();
             V value = cacheMap.get(key);
-            if (value == null && valueSupplier != null) { // cache miss
-                rwl.readLock().unlock();// Must release read lock before acquiring write lock
-                rwl.writeLock().lock();
-                try {// recheck state because another thread might have
-                    // acquired write lock and changed state before we did.
-                    value = cacheMap.get(key);
-                    if (value == null) { // not present in the cache
-                        value = valueSupplier.get();
-                        internalPutValue(key, value);
-                    }
-                } finally { // downgrade by acquiring read lock before releasing write lock
-                    rwl.readLock().lock();
-                    rwl.writeLock().unlock(); // unlock write, still hold read
-                }
+            if (value == null && valueSupplier != null) {
+                value = valueSupplier.get();
+                internalPutValue(key, value);
             }
             return value;
         } finally {
-            rwl.readLock().unlock();
+            rwl.writeLock().unlock();
         }
     }
 
@@ -140,35 +129,26 @@ public final class SimpleCache<K, V> {
 
     private V doGetValue(K key, boolean loadIfAbsent) {
         Objects.requireNonNull(key);
-        rwl.readLock().lock();
+        // A get may mutate an access-ordered LinkedHashMap, renew expiration metadata, and run cleanup.
+        // Keep all of those operations under the write lock to protect both the map and expiration state.
+        rwl.writeLock().lock();
         try {
             doCleanup();
             V value = cacheMap.get(key);
-            if (value == null && loadIfAbsent && valueLoader != null) { // cache miss
-                rwl.readLock().unlock();// must release read lock before acquiring write lock
-                rwl.writeLock().lock();
-                try {// recheck state because another thread might have
-                    // acquired write lock and changed state before we did.
-                    value = cacheMap.get(key);
-                    if (value == null) { // not present in the cache
-                        value = valueLoader.apply(key);
-                        internalPutValue(key, value);
-                    }
-                } finally { // downgrade by acquiring read lock before releasing write lock
-                    rwl.readLock().lock();
-                    rwl.writeLock().unlock(); // unlock write, still hold read
-                }
-            } else if(renewKeyOnAccess) {
+            if (value == null && loadIfAbsent && valueLoader != null) {
+                value = valueLoader.apply(key);
+                internalPutValue(key, value);
+            } else if (value != null && renewKeyOnAccess) {
                 renewKey(key);
             }
             return value;
         } finally {
-            rwl.readLock().unlock();
+            rwl.writeLock().unlock();
         }
     }
 
     private V internalPutValue(K key, V value) {
-        if(defaultExpiryAfter > 0) {
+        if (defaultExpiryAfter > 0) {
             ExpiringKey<K> expiringKey = new ExpiringKey<>(key, defaultExpiryAfter, defaultExpiryUnit);
             ExpiringKey<K> oldKey = expiringKeys.put(key, expiringKey);
             if (oldKey != null) {
@@ -189,8 +169,10 @@ public final class SimpleCache<K, V> {
         rwl.writeLock().lock();
         try {
             doCleanup();
-            delayQueue.remove(new ExpiringKey<>(key));
-            expiringKeys.remove(key);
+            ExpiringKey<K> expiringKey = expiringKeys.remove(key);
+            if (expiringKey != null) {
+                delayQueue.remove(expiringKey);
+            }
             return cacheMap.remove(key);
         } finally {
             rwl.writeLock().unlock();
@@ -216,8 +198,13 @@ public final class SimpleCache<K, V> {
      * @return the size of this cache
      */
     public long size() {
-        cleanup();
-        return cacheMap.size();
+        rwl.writeLock().lock();
+        try {
+            doCleanup();
+            return cacheMap.size();
+        } finally {
+            rwl.writeLock().unlock();
+        }
     }
 
     /**
@@ -226,15 +213,21 @@ public final class SimpleCache<K, V> {
      * @return {@code true} if the key can be renewed, {@code false} otherwise
      */
     public boolean renewKey(K key) {
-        ExpiringKey<K> expiringKey = expiringKeys.get(key);
-        if (expiringKey != null) {
-            // when modifying the delay, remove and then re-add the element to the queue.
-            delayQueue.remove(expiringKey);
-            expiringKey.renew();
-            delayQueue.offer(expiringKey);
-            return true;
+        rwl.writeLock().lock();
+        try {
+            doCleanup();
+            ExpiringKey<K> expiringKey = expiringKeys.get(key);
+            if (expiringKey != null) {
+                // when modifying the delay, remove and then re-add the element to the queue.
+                delayQueue.remove(expiringKey);
+                expiringKey.renew();
+                delayQueue.offer(expiringKey);
+                return true;
+            }
+            return false;
+        } finally {
+            rwl.writeLock().unlock();
         }
-        return false;
     }
 
     /**
