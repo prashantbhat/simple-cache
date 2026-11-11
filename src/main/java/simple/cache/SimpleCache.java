@@ -80,7 +80,7 @@ public final class SimpleCache<K, V> {
      * Put the given key and value into cache if the key is not already present.
      * @param key   the key
      * @param value the value
-     * @return the existing value if present or the given value; can be {@code null}
+     * @return the existing value if present or {@code null}
      */
     public V putIfAbsent(K key, V value) {
         return putIfAbsent(key, () -> value);
@@ -90,7 +90,7 @@ public final class SimpleCache<K, V> {
      * Put the key into cache with the value provided by the given supplier, if key is not already present.
      * @param key           the key
      * @param valueSupplier the value supplier
-     * @return the existing value if present or the given value by supplier; can be {@code null}
+     * @return the existing value if present or {@code null}
      */
     public V putIfAbsent(K key, Supplier<V> valueSupplier) {
         Objects.requireNonNull(key);
@@ -99,8 +99,7 @@ public final class SimpleCache<K, V> {
             doCleanup();
             V value = cacheMap.get(key);
             if (value == null && valueSupplier != null) {
-                value = valueSupplier.get();
-                internalPutValue(key, value);
+                internalPutValue(key, valueSupplier.get());
             }
             return value;
         } finally {

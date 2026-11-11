@@ -32,9 +32,9 @@ public class SimpleCacheTest {
     public void testWithValueLoader() {
         SimpleCache<String, String> simpleCache = SimpleCache.builder().build(s -> UUID.randomUUID().toString());
         assertNull(simpleCache.put("1", "one"));
-        assertEquals(simpleCache.get("1"), "one");
-        assertEquals(simpleCache.putIfAbsent("1", "ONE"), "one"); // should return the old value
-        assertEquals(simpleCache.putIfAbsent("2", () -> "two"), "two");
+        assertEquals("one", simpleCache.get("1"));
+        assertEquals("one", simpleCache.putIfAbsent("1", "ONE")); // should return the old value
+        assertNull(simpleCache.putIfAbsent("2", () -> "two"));
         assertNull(simpleCache.getIfPresent("3"));
         assertNotNull(simpleCache.get("3")); // from value loader
         assertEquals(3, simpleCache.size());
@@ -179,34 +179,35 @@ public class SimpleCacheTest {
     @Test
     public void testConcurrentAccessDoesNotThrow() throws Exception {
         SimpleCache<String, String> cache = SimpleCache.builder().expireAfter(200, ChronoUnit.MILLIS).build();
-        ExecutorService executor = Executors.newFixedThreadPool(8);
-        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService executor = Executors.newFixedThreadPool(8)) {
+            CountDownLatch start = new CountDownLatch(1);
 
-        Future<?>[] futures = new Future<?>[32];
-        for (int i = 0; i < futures.length; i++) {
-            final int idx = i;
-            futures[i] = executor.submit(() -> {
-                try {
-                    start.await();
-                    for (int j = 0; j < 200; j++) {
-                        String key = "k" + (idx % 4);
-                        cache.put(key, "v" + idx + ":" + j);
-                        cache.getIfPresent(key);
-                        cache.get(key);
-                        cache.size();
+            Future<?>[] futures = new Future<?>[32];
+            for (int i = 0; i < futures.length; i++) {
+                final int idx = i;
+                futures[i] = executor.submit(() -> {
+                    try {
+                        start.await();
+                        for (int j = 0; j < 200; j++) {
+                            String key = "k" + (idx % 4);
+                            cache.put(key, "v" + idx + ":" + j);
+                            cache.getIfPresent(key);
+                            cache.get(key);
+                            cache.size();
+                        }
+                        return null;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
                     }
-                    return null;
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-            });
-        }
+                });
+            }
 
-        start.countDown();
-        for (Future<?> future : futures) {
-            future.get();
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+            executor.shutdownNow();
         }
-        executor.shutdownNow();
     }
 }
