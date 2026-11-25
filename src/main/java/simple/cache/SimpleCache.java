@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.TemporalUnit;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -36,6 +37,7 @@ import java.util.function.Supplier;
  */
 public final class SimpleCache<K, V> {
     private final Map<K, V> cacheMap;
+    private final long maximumSize;
     private final Function<K, V> valueLoader;
     private final ReentrantReadWriteLock rwl;
 
@@ -47,9 +49,10 @@ public final class SimpleCache<K, V> {
     private final TemporalUnit defaultExpiryUnit;
     private final boolean renewKeyOnAccess;
 
-    private SimpleCache(Map<K, V> cacheMap, Function<K, V> valueLoader, long defaultExpiryAfter,
+    private SimpleCache(Map<K, V> cacheMap, long maximumSize, Function<K, V> valueLoader, long defaultExpiryAfter,
                         TemporalUnit defaultExpiryUnit, boolean renewKeyOnAccess) {
         this.cacheMap = cacheMap;
+        this.maximumSize = maximumSize;
         this.valueLoader = valueLoader;
         this.rwl = new ReentrantReadWriteLock();
         this.delayQueue = new DelayQueue<>();
@@ -155,7 +158,17 @@ public final class SimpleCache<K, V> {
             }
             delayQueue.offer(expiringKey);
         }
-        return cacheMap.put(key, value);
+        V oldValue = cacheMap.put(key, value);
+        if (maximumSize > 0 && cacheMap.size() > maximumSize) {
+            Iterator<K> keys = cacheMap.keySet().iterator();
+            K eldestKey = keys.next();
+            keys.remove();
+            ExpiringKey<K> evictedKey = expiringKeys.remove(eldestKey);
+            if (evictedKey != null) {
+                delayQueue.remove(evictedKey);
+            }
+        }
+        return oldValue;
     }
 
     /**
@@ -248,6 +261,10 @@ public final class SimpleCache<K, V> {
             expiringKeys.remove(expiringKey.getKey());
             expiringKey = delayQueue.poll();
         }
+    }
+
+    static long remainingDelay(Instant now, Instant expirationTime, TimeUnit timeUnit) {
+        return timeUnit.convert(Duration.between(now, expirationTime));
     }
 
     /**
@@ -346,17 +363,12 @@ public final class SimpleCache<K, V> {
             Map<K1, V1> cacheMap;
             if (maximumSize > 0) {
                 // LinkedHashMap as LRU map which uses access order instead of insertion order
-                cacheMap = new LinkedHashMap<>(initialCapacity, 0.75f, true) {
-                    @Override
-                    protected boolean removeEldestEntry(Map.Entry<K1, V1> eldest) {
-                        // remove the eldest entry when map size exceeds the maximum allowed limit
-                        return size() > maximumSize;
-                    }
-                };
+                cacheMap = new LinkedHashMap<>(initialCapacity, 0.75f, true);
             } else {
                 cacheMap = new HashMap<>(initialCapacity);
             }
-            return new SimpleCache<>(cacheMap, valueLoader, defaultExpiryAfter, defaultExpiryUnit, renewKeyOnAccess);
+            return new SimpleCache<>(cacheMap, maximumSize, valueLoader, defaultExpiryAfter, defaultExpiryUnit,
+                    renewKeyOnAccess);
         }
     }
 
@@ -387,14 +399,13 @@ public final class SimpleCache<K, V> {
 
         @Override
         public long getDelay(TimeUnit timeUnit) {
-            long diff = startTime == null ? 0 : Duration.between(Instant.now(),
-                    startTime.plus(expireAfter, expiryUnit)).toMillis();
-            return timeUnit.convert(diff, TimeUnit.MILLISECONDS);
+            return startTime == null ? 0 : remainingDelay(Instant.now(),
+                    startTime.plus(expireAfter, expiryUnit), timeUnit);
         }
 
         @Override
         public int compareTo(Delayed that) {
-            return Long.compare(this.getDelay(TimeUnit.MILLISECONDS), that.getDelay(TimeUnit.MILLISECONDS));
+            return Long.compare(this.getDelay(TimeUnit.NANOSECONDS), that.getDelay(TimeUnit.NANOSECONDS));
         }
 
         @Override

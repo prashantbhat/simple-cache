@@ -17,12 +17,14 @@ package simple.cache;
 
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -55,6 +57,29 @@ public class SimpleCacheTest {
         assertNull(simpleCache.getIfPresent("2")); // key 'two' should not be present
         assertEquals(4, simpleCache.size());
         simpleCache.clear();
+    }
+
+    @Test
+    public void testLRUEvictionClearsExpirationState() {
+        SimpleCache<String, String> cache = SimpleCache.builder()
+                .maximumSize(1)
+                .expireAfter(1, ChronoUnit.DAYS)
+                .build();
+
+        cache.put("a", "A");
+        cache.put("b", "B");
+
+        assertFalse(cache.renewKey("a"));
+        assertTrue(cache.renewKey("b"));
+        assertEquals(1, cache.size());
+    }
+
+    @Test
+    public void testSubMillisecondExpirationDelayIsNotTruncated() {
+        Instant now = Instant.parse("2024-01-01T00:00:00Z");
+        Instant expirationTime = now.plusNanos(500_000);
+
+        assertEquals(500_000, SimpleCache.remainingDelay(now, expirationTime, TimeUnit.NANOSECONDS));
     }
 
     @Test
@@ -160,6 +185,25 @@ public class SimpleCacheTest {
         assertEquals("loaded:x", cache.get("x"));
         assertEquals("loaded:x", cache.get("x"));
         assertEquals(1, calls.get());
+    }
+
+    @Test
+    public void testPutIfAbsentSupplierIsOnlyUsedForMissingKey() {
+        AtomicInteger calls = new AtomicInteger();
+        SimpleCache<String, String> cache = SimpleCache.builder().build();
+        cache.put("existing", "value");
+
+        assertEquals("value", cache.putIfAbsent("existing", () -> {
+            calls.incrementAndGet();
+            return "unused";
+        }));
+        assertNull(cache.putIfAbsent("missing", () -> {
+            calls.incrementAndGet();
+            return "created";
+        }));
+
+        assertEquals(1, calls.get());
+        assertEquals("created", cache.getIfPresent("missing"));
     }
 
     @Test
