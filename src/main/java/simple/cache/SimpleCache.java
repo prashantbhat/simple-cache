@@ -45,20 +45,20 @@ public final class SimpleCache<K, V> {
     private final DelayQueue<ExpiringKey<K>> delayQueue;
     private final Map<K, ExpiringKey<K>> expiringKeys;
     // The default max lifetime in milliseconds.
-    private final long defaultExpiryAfter;
-    private final TemporalUnit defaultExpiryUnit;
+    private final long expiryAfter;
+    private final TemporalUnit expiryUnit;
     private final boolean renewKeyOnAccess;
 
-    private SimpleCache(Map<K, V> cacheMap, long maximumSize, Function<K, V> valueLoader, long defaultExpiryAfter,
-                        TemporalUnit defaultExpiryUnit, boolean renewKeyOnAccess) {
+    private SimpleCache(Map<K, V> cacheMap, long maximumSize, Function<K, V> valueLoader, long expiryAfter,
+                        TemporalUnit expiryUnit, boolean renewKeyOnAccess) {
         this.cacheMap = cacheMap;
         this.maximumSize = maximumSize;
         this.valueLoader = valueLoader;
         this.rwl = new ReentrantReadWriteLock();
         this.delayQueue = new DelayQueue<>();
         this.expiringKeys = new HashMap<>();
-        this.defaultExpiryAfter = defaultExpiryAfter;
-        this.defaultExpiryUnit = defaultExpiryUnit;
+        this.expiryAfter = expiryAfter;
+        this.expiryUnit = expiryUnit;
         this.renewKeyOnAccess = renewKeyOnAccess;
     }
 
@@ -131,8 +131,19 @@ public final class SimpleCache<K, V> {
 
     private V doGetValue(K key, boolean loadIfAbsent) {
         Objects.requireNonNull(key);
-        // A get may mutate an access-ordered LinkedHashMap, renew expiration metadata, and run cleanup.
-        // Keep all of those operations under the write lock to protect both the map and expiration state.
+        if (maximumSize <= 0 && expiryAfter == 0) {
+            rwl.readLock().lock();
+            try {
+                V value = cacheMap.get(key);
+                if (value != null || !loadIfAbsent || valueLoader == null) {
+                    return value;
+                }
+            } finally {
+                rwl.readLock().unlock();
+            }
+        }
+        // Bounded or expiring caches may mutate LRU order or expiration metadata during a get.
+        // Keep those operations under the write lock to protect the map and expiration state.
         rwl.writeLock().lock();
         try {
             doCleanup();
@@ -150,8 +161,8 @@ public final class SimpleCache<K, V> {
     }
 
     private V internalPutValue(K key, V value) {
-        if (defaultExpiryAfter > 0) {
-            ExpiringKey<K> expiringKey = new ExpiringKey<>(key, defaultExpiryAfter, defaultExpiryUnit);
+        if (expiryAfter > 0) {
+            ExpiringKey<K> expiringKey = new ExpiringKey<>(key, expiryAfter, expiryUnit);
             ExpiringKey<K> oldKey = expiringKeys.put(key, expiringKey);
             if (oldKey != null) {
                 delayQueue.remove(oldKey);
@@ -210,6 +221,14 @@ public final class SimpleCache<K, V> {
      * @return the size of this cache
      */
     public long size() {
+        if (expiryAfter == 0) {
+            rwl.readLock().lock();
+            try {
+                return cacheMap.size();
+            } finally {
+                rwl.readLock().unlock();
+            }
+        }
         rwl.writeLock().lock();
         try {
             doCleanup();
@@ -283,8 +302,8 @@ public final class SimpleCache<K, V> {
     public static final class CacheBuilder<K, V> {
         private int initialCapacity = -1;
         private long maximumSize = -1;
-        private long defaultExpiryAfter = 0;
-        private TemporalUnit defaultExpiryUnit;
+        private long expiryAfter = 0;
+        private TemporalUnit expiryUnit;
         private boolean renewKeyOnAccess;
 
         /**
@@ -326,8 +345,8 @@ public final class SimpleCache<K, V> {
             if (expiryAfter <= 0) {
                 throw new IllegalArgumentException("value for expiryAfter should be greater than zero");
             }
-            this.defaultExpiryAfter = expiryAfter;
-            this.defaultExpiryUnit = Objects.requireNonNull(expiryUnit);
+            this.expiryAfter = expiryAfter;
+            this.expiryUnit = Objects.requireNonNull(expiryUnit);
             return this;
         }
 
@@ -367,7 +386,7 @@ public final class SimpleCache<K, V> {
             } else {
                 cacheMap = new HashMap<>(initialCapacity);
             }
-            return new SimpleCache<>(cacheMap, maximumSize, valueLoader, defaultExpiryAfter, defaultExpiryUnit,
+            return new SimpleCache<>(cacheMap, maximumSize, valueLoader, expiryAfter, expiryUnit,
                     renewKeyOnAccess);
         }
     }

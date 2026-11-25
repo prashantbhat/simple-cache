@@ -188,6 +188,92 @@ public class SimpleCacheTest {
     }
 
     @Test
+    public void testConcurrentGetLoadsValueOnce() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch loaderStarted = new CountDownLatch(1);
+        CountDownLatch releaseLoader = new CountDownLatch(1);
+        SimpleCache<String, String> cache = SimpleCache.builder().build(key -> {
+            calls.incrementAndGet();
+            loaderStarted.countDown();
+            try {
+                if (!releaseLoader.await(5, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Timed out waiting to release value loader");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+            return "loaded:" + key;
+        });
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(8)) {
+            CountDownLatch start = new CountDownLatch(1);
+            Future<?>[] futures = new Future<?>[8];
+            for (int i = 0; i < futures.length; i++) {
+                futures[i] = executor.submit(() -> {
+                    try {
+                        start.await();
+                        return cache.get("shared");
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                });
+            }
+
+            start.countDown();
+            try {
+                assertTrue(loaderStarted.await(5, TimeUnit.SECONDS));
+            } finally {
+                releaseLoader.countDown();
+            }
+            for (Future<?> future : futures) {
+                assertEquals("loaded:shared", future.get());
+            }
+        }
+
+        assertEquals(1, calls.get());
+    }
+
+    @Test
+    public void testConcurrentAccessWithUnboundedCacheMaintainsInvariants() throws Exception {
+        int keyCount = 8;
+        int threadCount = 8;
+        SimpleCache<String, String> cache = SimpleCache.builder().build();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            CountDownLatch start = new CountDownLatch(1);
+            Future<?>[] futures = new Future<?>[threadCount];
+            for (int i = 0; i < futures.length; i++) {
+                final int threadIndex = i;
+                futures[i] = executor.submit(() -> {
+                    try {
+                        start.await();
+                        for (int j = 0; j < 1_000; j++) {
+                            String key = "k" + (j % keyCount);
+                            cache.put(key, key + ":" + threadIndex + ":" + j);
+                            String value = cache.getIfPresent(key);
+                            assertNotNull(value);
+                            assertTrue(value.startsWith(key + ":"));
+                            assertTrue(cache.size() <= keyCount);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                });
+            }
+
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        }
+
+        assertEquals(keyCount, cache.size());
+    }
+
+    @Test
     public void testPutIfAbsentSupplierIsOnlyUsedForMissingKey() {
         AtomicInteger calls = new AtomicInteger();
         SimpleCache<String, String> cache = SimpleCache.builder().build();
@@ -253,5 +339,55 @@ public class SimpleCacheTest {
             }
             executor.shutdownNow();
         }
+    }
+
+    @Test
+    public void testConcurrentAccessWithLruEvictionMaintainsInvariants() throws Exception {
+        int maximumSize = 8;
+        int keyCount = 64;
+        int threadCount = 8;
+        SimpleCache<String, String> cache = SimpleCache.builder().maximumSize(maximumSize).build();
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(threadCount)) {
+            CountDownLatch start = new CountDownLatch(1);
+            Future<?>[] futures = new Future<?>[threadCount];
+            for (int i = 0; i < futures.length; i++) {
+                final int threadIndex = i;
+                futures[i] = executor.submit(() -> {
+                    try {
+                        start.await();
+                        for (int j = 0; j < 1_000; j++) {
+                            int keyIndex = (threadIndex * 31 + j) % keyCount;
+                            String key = "k" + keyIndex;
+                            cache.put(key, key + ":" + threadIndex + ":" + j);
+
+                            String readKey = "k" + ((keyIndex + 17) % keyCount);
+                            String readValue = cache.getIfPresent(readKey);
+                            assertTrue(readValue == null || readValue.startsWith(readKey + ":"));
+
+                            String value = cache.get(key);
+                            assertTrue(value == null || value.startsWith(key + ":"));
+                            assertTrue(cache.size() <= maximumSize);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                });
+            }
+
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get();
+            }
+        }
+
+        assertEquals(maximumSize, cache.size());
+        for (int i = 0; i < keyCount; i++) {
+            String key = "k" + i;
+            String value = cache.getIfPresent(key);
+            assertTrue(value == null || value.startsWith(key + ":"));
+        }
+        assertEquals(maximumSize, cache.size());
     }
 }
